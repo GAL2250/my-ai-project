@@ -1,70 +1,95 @@
 let particles = [];
-let particleCount = 320;
+
+const MAX_PARTICLES = 150;
+const PARTICLE_LIFE = 180; // 约 3 秒，60fps 下 180 帧
+const SPAWN_DISTANCE = 6;
 
 let pointerX = 0;
 let pointerY = 0;
-let hasPointer = false;
+let previousPointerX = 0;
+let previousPointerY = 0;
 
-let isGathering = false;
-let gatherTimer = 0;
+let hasPointer = false;
+let lastMoveFrame = -9999;
+
+let clickGather = false;
+let clickGatherTimer = 0;
 
 function setup() {
-  const container = document.getElementById("canvas-container");
+  const status = document.getElementById("debug-status");
+  if (status) {
+    status.textContent = "generative field active";
+  }
 
+  const container = document.getElementById("canvas-container");
   const canvas = createCanvas(windowWidth, windowHeight);
-  canvas.parent(container);
+
+  if (container) {
+    canvas.parent(container);
+  }
+
+  canvas.style("position", "fixed");
+  canvas.style("left", "0");
+  canvas.style("top", "0");
+  canvas.style("z-index", "9999");
+  canvas.style("pointer-events", "none");
 
   pixelDensity(1);
 
   pointerX = width / 2;
   pointerY = height / 2;
-
-  createParticles();
+  previousPointerX = pointerX;
+  previousPointerY = pointerY;
 
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerdown", handlePointerDown);
   window.addEventListener("pointerup", handlePointerUp);
-  window.addEventListener("touchmove", function (event) {
-    event.preventDefault();
-  }, { passive: false });
 }
 
 function draw() {
-  background(2, 6, 17, 38);
+  // 透明清屏，让粒子叠在网页上，不再生成大面积背景雾团
+  clear();
 
-  if (isGathering) {
-    gatherTimer--;
+  if (clickGather) {
+    clickGatherTimer--;
 
-    if (gatherTimer <= 0) {
-      isGathering = false;
+    if (clickGatherTimer <= 0) {
+      clickGather = false;
     }
   }
 
-  drawConnectionLines();
-
-  for (let i = 0; i < particles.length; i++) {
-    particles[i].update();
-    particles[i].display();
-  }
-
-  drawPointerGlow();
-}
-
-function createParticles() {
-  particles = [];
-
-  for (let i = 0; i < particleCount; i++) {
-    particles.push(new Particle());
-  }
+  updateParticles();
+  drawParticles();
 }
 
 function handlePointerMove(event) {
-  pointerX = event.clientX;
-  pointerY = event.clientY;
-  hasPointer = true;
+  const newX = event.clientX;
+  const newY = event.clientY;
 
-  if (!event.buttons) {
-    isGathering = false;
+  if (!hasPointer) {
+    pointerX = newX;
+    pointerY = newY;
+    previousPointerX = newX;
+    previousPointerY = newY;
+    hasPointer = true;
+  }
+
+  const movement = dist(newX, newY, pointerX, pointerY);
+
+  previousPointerX = pointerX;
+  previousPointerY = pointerY;
+
+  pointerX = newX;
+  pointerY = newY;
+
+  if (movement > SPAWN_DISTANCE) {
+    lastMoveFrame = frameCount;
+    spawnParticlesAlongPath(previousPointerX, previousPointerY, pointerX, pointerY);
+  }
+
+  // 鼠标移动时回到蓝色状态
+  if (event.buttons === 0) {
+    clickGather = false;
   }
 }
 
@@ -73,184 +98,187 @@ function handlePointerDown(event) {
   pointerY = event.clientY;
   hasPointer = true;
 
-  isGathering = true;
-  gatherTimer = 95;
+  clickGather = true;
+  clickGatherTimer = 55;
 
-  for (let i = 0; i < particles.length; i++) {
-    particles[i].burst();
+  // 点击时只影响现有粒子，不额外制造大量爆炸粒子
+  for (let p of particles) {
+    p.turnWhite();
   }
 }
 
 function handlePointerUp() {
-  gatherTimer = 45;
+  clickGatherTimer = 25;
+}
+
+function spawnParticlesAlongPath(x1, y1, x2, y2) {
+  const pathLength = dist(x1, y1, x2, y2);
+
+  // 控制生成密度：移动越快，沿路径生成少量粒子
+  const steps = constrain(floor(pathLength / 18), 1, 5);
+
+  for (let i = 0; i < steps; i++) {
+    const t = i / steps;
+
+    const x = lerp(x1, x2, t) + random(-18, 18);
+    const y = lerp(y1, y2, t) + random(-18, 18);
+
+    // 每个点生成少量像素粒子
+    const amount = 2;
+
+    for (let j = 0; j < amount; j++) {
+      particles.push(new Particle(x, y));
+    }
+  }
+
+  // 限制总数，避免页面变乱
+  if (particles.length > MAX_PARTICLES) {
+    particles.splice(0, particles.length - MAX_PARTICLES);
+  }
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+
+    p.update();
+
+    if (p.isDead()) {
+      particles.splice(i, 1);
+    }
+  }
+}
+
+function drawParticles() {
+  noStroke();
+
+  for (let p of particles) {
+    p.draw();
+  }
 }
 
 class Particle {
-  constructor() {
-    this.position = createVector(random(width), random(height));
-    this.velocity = p5.Vector.random2D().mult(random(0.4, 2.0));
-    this.acceleration = createVector(0, 0);
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
 
-    this.size = random(2, 5);
-    this.maxSpeed = random(3.2, 6.5);
-    this.noiseSeed = random(1000);
+    this.vx = random(-0.55, 0.55);
+    this.vy = random(-0.55, 0.55);
 
-    this.blueAlpha = random(130, 230);
+    this.size = random(1.1, 2.2);
+
+    this.age = 0;
+    this.life = PARTICLE_LIFE + random(-30, 25);
+
+    this.seed = random(1000);
+
+    this.isWhite = false;
+    this.whiteTimer = 0;
+
+    this.history = [];
+    this.maxHistory = floor(random(5, 9));
   }
 
   update() {
-    const target = createVector(pointerX, pointerY);
+    this.age++;
 
-    if (isGathering) {
-      this.gatherTo(target);
+    // 保存历史位置，形成细微拖影
+    this.history.push({
+      x: this.x,
+      y: this.y
+    });
+
+    if (this.history.length > this.maxHistory) {
+      this.history.shift();
+    }
+
+    if (clickGather) {
+      this.gatherToPointer();
     } else {
-      this.followPointer(target);
-      this.flowField();
+      this.drift();
     }
 
-    this.velocity.add(this.acceleration);
-    this.velocity.limit(this.maxSpeed);
-    this.position.add(this.velocity);
-    this.acceleration.mult(0);
+    this.x += this.vx;
+    this.y += this.vy;
 
-    this.wrapAroundEdges();
-  }
-
-  followPointer(target) {
-    const desired = p5.Vector.sub(target, this.position);
-    const distance = desired.mag();
-
-    if (distance > 1) {
-      desired.normalize();
-
-      let strength = map(distance, 0, 700, 0.015, 0.32);
-      strength = constrain(strength, 0.015, 0.32);
-
-      desired.mult(strength);
-      this.acceleration.add(desired);
+    if (this.whiteTimer > 0) {
+      this.whiteTimer--;
+    } else {
+      this.isWhite = false;
     }
   }
 
-  gatherTo(target) {
-    const desired = p5.Vector.sub(target, this.position);
-    const distance = desired.mag();
-
-    if (distance > 1) {
-      desired.normalize();
-
-      let strength = map(distance, 0, width, 0.45, 2.4);
-      strength = constrain(strength, 0.45, 2.4);
-
-      desired.mult(strength);
-      this.acceleration.add(desired);
-    }
-
-    this.velocity.mult(0.96);
-  }
-
-  flowField() {
+  drift() {
+    // 轻微噪声漂移，让它像生成式像素场，而不是普通鼠标尾迹
     const angle = noise(
-      this.position.x * 0.004,
-      this.position.y * 0.004,
-      frameCount * 0.006 + this.noiseSeed
-    ) * TWO_PI * 4;
+      this.x * 0.008,
+      this.y * 0.008,
+      frameCount * 0.01 + this.seed
+    ) * TWO_PI * 2;
 
-    const force = createVector(cos(angle), sin(angle));
-    force.mult(0.13);
+    this.vx += cos(angle) * 0.025;
+    this.vy += sin(angle) * 0.025;
 
-    this.acceleration.add(force);
+    // 缓慢阻尼，保持高级感
+    this.vx *= 0.975;
+    this.vy *= 0.975;
   }
 
-  burst() {
-    const randomForce = p5.Vector.random2D();
-    randomForce.mult(random(0.4, 1.2));
-    this.velocity.add(randomForce);
+  gatherToPointer() {
+    const dx = pointerX - this.x;
+    const dy = pointerY - this.y;
+    const d = sqrt(dx * dx + dy * dy) || 1;
+
+    // 只做轻微聚拢，不要形成一大团
+    const force = map(d, 0, 500, 0.015, 0.18);
+    const limitedForce = constrain(force, 0.015, 0.18);
+
+    this.vx += (dx / d) * limitedForce;
+    this.vy += (dy / d) * limitedForce;
+
+    this.vx *= 0.96;
+    this.vy *= 0.96;
   }
 
-  display() {
-    noStroke();
-
-    if (isGathering) {
-      // 点击时：白色粒子
-      fill(255, 255, 255, 225);
-      circle(this.position.x, this.position.y, this.size * 1.7);
-
-      fill(255, 255, 255, 38);
-      circle(this.position.x, this.position.y, this.size * 6);
-    } else {
-      // 平时：蓝色粒子
-      fill(55, 175, 255, this.blueAlpha);
-      circle(this.position.x, this.position.y, this.size);
-
-      fill(55, 175, 255, 34);
-      circle(this.position.x, this.position.y, this.size * 5.5);
-    }
+  turnWhite() {
+    this.isWhite = true;
+    this.whiteTimer = 70;
   }
 
-  wrapAroundEdges() {
-    if (this.position.x < -20) {
-      this.position.x = width + 20;
-    }
+  draw() {
+    const lifeRatio = 1 - this.age / this.life;
+    const alpha = constrain(lifeRatio, 0, 1);
 
-    if (this.position.x > width + 20) {
-      this.position.x = -20;
-    }
+    // 画拖影：不是线，而是逐渐消失的小像素点
+    for (let i = 0; i < this.history.length; i++) {
+      const h = this.history[i];
+      const trailRatio = i / this.history.length;
+      const trailAlpha = alpha * trailRatio * 70;
 
-    if (this.position.y < -20) {
-      this.position.y = height + 20;
-    }
-
-    if (this.position.y > height + 20) {
-      this.position.y = -20;
-    }
-  }
-}
-
-function drawPointerGlow() {
-  if (!hasPointer) return;
-
-  noStroke();
-
-  if (isGathering) {
-    fill(255, 255, 255, 45);
-    circle(pointerX, pointerY, 150);
-
-    fill(255, 255, 255, 90);
-    circle(pointerX, pointerY, 36);
-  } else {
-    fill(55, 175, 255, 35);
-    circle(pointerX, pointerY, 180);
-
-    fill(55, 175, 255, 115);
-    circle(pointerX, pointerY, 22);
-  }
-}
-
-function drawConnectionLines() {
-  if (!hasPointer) return;
-
-  strokeWeight(1);
-
-  for (let i = 0; i < particles.length; i += 4) {
-    const p = particles[i];
-    const distance = dist(p.position.x, p.position.y, pointerX, pointerY);
-
-    if (distance < 180) {
-      if (isGathering) {
-        stroke(255, 255, 255, map(distance, 0, 180, 90, 0));
+      if (this.isWhite || clickGather) {
+        fill(255, 255, 255, trailAlpha);
       } else {
-        stroke(55, 175, 255, map(distance, 0, 180, 70, 0));
+        fill(80, 175, 255, trailAlpha);
       }
 
-      line(p.position.x, p.position.y, pointerX, pointerY);
+      rect(h.x, h.y, this.size, this.size);
     }
+
+    // 主像素点
+    if (this.isWhite || clickGather) {
+      fill(255, 255, 255, alpha * 210);
+    } else {
+      fill(85, 180, 255, alpha * 190);
+    }
+
+    rect(this.x, this.y, this.size, this.size);
+  }
+
+  isDead() {
+    return this.age >= this.life;
   }
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
-
-  if (particles.length === 0) {
-    createParticles();
-  }
 }
