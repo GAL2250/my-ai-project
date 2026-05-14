@@ -1,1 +1,1 @@
-# my-ai-project
+# gagagoose-portfolio
