@@ -1,29 +1,36 @@
 let particles = [];
-let particleCount = 260;
+let particleCount = 320;
 
-let mouseTarget;
+let pointerX = 0;
+let pointerY = 0;
+let hasPointer = false;
+
 let isGathering = false;
 let gatherTimer = 0;
 
 function setup() {
+  const container = document.getElementById("canvas-container");
+
   const canvas = createCanvas(windowWidth, windowHeight);
-  canvas.parent("canvas-container");
+  canvas.parent(container);
 
   pixelDensity(1);
-  colorMode(RGB, 255, 255, 255, 255);
 
-  mouseTarget = createVector(width / 2, height / 2);
+  pointerX = width / 2;
+  pointerY = height / 2;
 
-  for (let i = 0; i < particleCount; i++) {
-    particles.push(new Particle());
-  }
+  createParticles();
+
+  window.addEventListener("pointermove", handlePointerMove);
+  window.addEventListener("pointerdown", handlePointerDown);
+  window.addEventListener("pointerup", handlePointerUp);
+  window.addEventListener("touchmove", function (event) {
+    event.preventDefault();
+  }, { passive: false });
 }
 
 function draw() {
-  // 半透明背景，制造拖影
-  background(2, 6, 17, 35);
-
-  mouseTarget.set(mouseX, mouseY);
+  background(2, 6, 17, 38);
 
   if (isGathering) {
     gatherTimer--;
@@ -33,135 +40,217 @@ function draw() {
     }
   }
 
-  for (let p of particles) {
-    p.update();
-    p.display();
+  drawConnectionLines();
+
+  for (let i = 0; i < particles.length; i++) {
+    particles[i].update();
+    particles[i].display();
   }
 
-  drawCursorGlow();
+  drawPointerGlow();
 }
 
-function mouseMoved() {
-  // 鼠标移动时，粒子保持蓝色跟随
-  isGathering = false;
+function createParticles() {
+  particles = [];
+
+  for (let i = 0; i < particleCount; i++) {
+    particles.push(new Particle());
+  }
 }
 
-function mousePressed() {
-  // 点击时，粒子变白并向点击点聚拢
-  mouseTarget.set(mouseX, mouseY);
+function handlePointerMove(event) {
+  pointerX = event.clientX;
+  pointerY = event.clientY;
+  hasPointer = true;
+
+  if (!event.buttons) {
+    isGathering = false;
+  }
+}
+
+function handlePointerDown(event) {
+  pointerX = event.clientX;
+  pointerY = event.clientY;
+  hasPointer = true;
+
   isGathering = true;
-  gatherTimer = 90;
+  gatherTimer = 95;
+
+  for (let i = 0; i < particles.length; i++) {
+    particles[i].burst();
+  }
 }
 
-function touchMoved() {
-  mouseTarget.set(mouseX, mouseY);
-  isGathering = false;
-  return false;
-}
-
-function touchStarted() {
-  mouseTarget.set(mouseX, mouseY);
-  isGathering = true;
-  gatherTimer = 90;
-  return false;
+function handlePointerUp() {
+  gatherTimer = 45;
 }
 
 class Particle {
   constructor() {
     this.position = createVector(random(width), random(height));
-    this.velocity = p5.Vector.random2D().mult(random(0.5, 2));
+    this.velocity = p5.Vector.random2D().mult(random(0.4, 2.0));
     this.acceleration = createVector(0, 0);
+
     this.size = random(2, 5);
-    this.maxSpeed = random(3, 6);
-    this.noiseOffset = random(1000);
+    this.maxSpeed = random(3.2, 6.5);
+    this.noiseSeed = random(1000);
+
+    this.blueAlpha = random(130, 230);
   }
 
   update() {
-    let targetForce;
+    const target = createVector(pointerX, pointerY);
 
     if (isGathering) {
-      // 点击时：强烈向鼠标点击点聚拢
-      targetForce = p5.Vector.sub(mouseTarget, this.position);
-      let distance = targetForce.mag();
-
-      targetForce.normalize();
-
-      let strength = map(distance, 0, width, 0.2, 1.8);
-      targetForce.mult(strength);
+      this.gatherTo(target);
     } else {
-      // 鼠标移动时：蓝色粒子柔和跟随鼠标
-      targetForce = p5.Vector.sub(mouseTarget, this.position);
-      let distance = targetForce.mag();
-
-      targetForce.normalize();
-
-      let strength = map(distance, 0, 500, 0.02, 0.45);
-      strength = constrain(strength, 0.02, 0.45);
-      targetForce.mult(strength);
-
-      // 加一点噪声，让它不像普通鼠标尾巴，而更像生成式流场
-      let angle = noise(
-        this.position.x * 0.004,
-        this.position.y * 0.004,
-        frameCount * 0.006 + this.noiseOffset
-      ) * TWO_PI * 4;
-
-      let noiseForce = createVector(cos(angle), sin(angle));
-      noiseForce.mult(0.18);
-
-      targetForce.add(noiseForce);
+      this.followPointer(target);
+      this.flowField();
     }
 
-    this.acceleration.add(targetForce);
     this.velocity.add(this.acceleration);
     this.velocity.limit(this.maxSpeed);
     this.position.add(this.velocity);
     this.acceleration.mult(0);
 
-    // 边界处理：粒子飞出屏幕后从另一边回来
-    if (this.position.x < 0) this.position.x = width;
-    if (this.position.x > width) this.position.x = 0;
-    if (this.position.y < 0) this.position.y = height;
-    if (this.position.y > height) this.position.y = 0;
+    this.wrapAroundEdges();
+  }
+
+  followPointer(target) {
+    const desired = p5.Vector.sub(target, this.position);
+    const distance = desired.mag();
+
+    if (distance > 1) {
+      desired.normalize();
+
+      let strength = map(distance, 0, 700, 0.015, 0.32);
+      strength = constrain(strength, 0.015, 0.32);
+
+      desired.mult(strength);
+      this.acceleration.add(desired);
+    }
+  }
+
+  gatherTo(target) {
+    const desired = p5.Vector.sub(target, this.position);
+    const distance = desired.mag();
+
+    if (distance > 1) {
+      desired.normalize();
+
+      let strength = map(distance, 0, width, 0.45, 2.4);
+      strength = constrain(strength, 0.45, 2.4);
+
+      desired.mult(strength);
+      this.acceleration.add(desired);
+    }
+
+    this.velocity.mult(0.96);
+  }
+
+  flowField() {
+    const angle = noise(
+      this.position.x * 0.004,
+      this.position.y * 0.004,
+      frameCount * 0.006 + this.noiseSeed
+    ) * TWO_PI * 4;
+
+    const force = createVector(cos(angle), sin(angle));
+    force.mult(0.13);
+
+    this.acceleration.add(force);
+  }
+
+  burst() {
+    const randomForce = p5.Vector.random2D();
+    randomForce.mult(random(0.4, 1.2));
+    this.velocity.add(randomForce);
   }
 
   display() {
     noStroke();
 
     if (isGathering) {
-      // 点击时变白
-      fill(255, 255, 255, 210);
-      circle(this.position.x, this.position.y, this.size * 1.8);
+      // 点击时：白色粒子
+      fill(255, 255, 255, 225);
+      circle(this.position.x, this.position.y, this.size * 1.7);
+
+      fill(255, 255, 255, 38);
+      circle(this.position.x, this.position.y, this.size * 6);
     } else {
-      // 平时是蓝色粒子
-      fill(40, 170, 255, 170);
+      // 平时：蓝色粒子
+      fill(55, 175, 255, this.blueAlpha);
       circle(this.position.x, this.position.y, this.size);
 
-      // 蓝色光晕
-      fill(40, 170, 255, 38);
-      circle(this.position.x, this.position.y, this.size * 5);
+      fill(55, 175, 255, 34);
+      circle(this.position.x, this.position.y, this.size * 5.5);
+    }
+  }
+
+  wrapAroundEdges() {
+    if (this.position.x < -20) {
+      this.position.x = width + 20;
+    }
+
+    if (this.position.x > width + 20) {
+      this.position.x = -20;
+    }
+
+    if (this.position.y < -20) {
+      this.position.y = height + 20;
+    }
+
+    if (this.position.y > height + 20) {
+      this.position.y = -20;
     }
   }
 }
 
-function drawCursorGlow() {
+function drawPointerGlow() {
+  if (!hasPointer) return;
+
   noStroke();
 
   if (isGathering) {
     fill(255, 255, 255, 45);
-    circle(mouseTarget.x, mouseTarget.y, 120);
+    circle(pointerX, pointerY, 150);
 
     fill(255, 255, 255, 90);
-    circle(mouseTarget.x, mouseTarget.y, 28);
+    circle(pointerX, pointerY, 36);
   } else {
-    fill(40, 170, 255, 38);
-    circle(mouseTarget.x, mouseTarget.y, 160);
+    fill(55, 175, 255, 35);
+    circle(pointerX, pointerY, 180);
 
-    fill(40, 170, 255, 120);
-    circle(mouseTarget.x, mouseTarget.y, 18);
+    fill(55, 175, 255, 115);
+    circle(pointerX, pointerY, 22);
+  }
+}
+
+function drawConnectionLines() {
+  if (!hasPointer) return;
+
+  strokeWeight(1);
+
+  for (let i = 0; i < particles.length; i += 4) {
+    const p = particles[i];
+    const distance = dist(p.position.x, p.position.y, pointerX, pointerY);
+
+    if (distance < 180) {
+      if (isGathering) {
+        stroke(255, 255, 255, map(distance, 0, 180, 90, 0));
+      } else {
+        stroke(55, 175, 255, map(distance, 0, 180, 70, 0));
+      }
+
+      line(p.position.x, p.position.y, pointerX, pointerY);
+    }
   }
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+
+  if (particles.length === 0) {
+    createParticles();
+  }
 }
